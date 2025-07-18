@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header class="paper-header">
+    <h1 class="paper-title">{{ title }}</h1>
+    <div class="paper-authors">
+        {% for author in authors %}
+        <span class="author">
+            {% if author.url %}
+            <a href="{{ author.url }}" target="_blank">{{ author.name }}</a>
+            {% else %}
+            {{ author.name }}
+            {% endif %}
+            {% if author.affiliation %}
+            <span class="affiliation">{{ author.affiliation }}</span>
+            {% endif %}
+        </span>
+        {% if not loop.last %}, {% endif %}
+        {% endfor %}
+    </div>
+    
+    <div class="paper-links">
+        {% if show_pdf %}
+        <a href="paper.pdf" class="btn btn-primary">
+            <i class="icon-pdf"></i> PDF
+        </a>
+        {% endif %}
+        
+        {% if arxiv_id %}
+        <a href="https://arxiv.org/abs/{{ arxiv_id }}" class="btn btn-secondary" target="_blank">
+            <i class="icon-arxiv"></i> arXiv
+        </a>
+        {% endif %}
+        
+        {% if github_repo %}
+        <a href="{{ github_repo }}" class="btn btn-secondary" target="_blank">
+            <i class="icon-github"></i> Code
+        </a>
+        {% endif %}
+        
+        {% if show_bibtex %}
+        <a href="bibtex.html" class="btn btn-secondary">
+            <i class="icon-cite"></i> BibTeX
+        </a>
+        {% endif %}
+    </div>
+</header>
+
+<main class="paper-content">
+    {% if abstract %}
+    <section class="abstract">
+        <h2>Abstract</h2>
+        <p>{{ abstract }}</p>
+    </section>
+    {% endif %}
+    
+    <nav class="table-of-contents">
+        <h2>Contents</h2>
+        <ul>
+            {% for section in sections %}
+            <li><a href="#{{ section.id }}">{{ section.title }}</a></li>
+            {% endfor %}
+        </ul>
+    </nav>
+    
+    {% for section in sections %}
+    <section id="{{ section.id }}" class="content-section">
+        <h2>{{ section.title }}</h2>
+        <div class="section-content">
+            {{ section.content | safe }}
+        </div>
+    </section>
+    {% endfor %}
+    
+    {% if figures %}
+    <section class="figures-gallery">
+        <h2>Figures</h2>
+        <div class="figures-grid">
+            {% for figure in figures %}
+            <div class="figure" id="fig-{{ figure.label }}">
+                <img src="figures/{{ figure.path }}" alt="{{ figure.caption }}" 
+                     {% if interactive_figures %}onclick="openFigureModal(this)"{% endif %}>
+                <div class="figure-caption">
+                    <strong>Figure {{ loop.index }}:</strong> {{ figure.caption }}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+    
+    {% if references %}
+    <section class="references">
+        <h2>References</h2>
+        <ol class="references-list">
+            {% for ref in references %}
+            <li id="ref-{{ ref.id }}">{{ ref.text }}</li>
+            {% endfor %}
+        </ol>
+    </section>
+    {% endif %}
+</main>
+
+{% if interactive_figures %}
+<!-- Figure Modal -->
+<div id="figure-modal" class="modal">
+    <div class="modal-content">
+        <span class="close">&times;</span>
+        <img id="modal-image" src="" alt="">
+        <div id="modal-caption"></div>
+    </div>
+</div>
+{% endif %}
+
+<footer class="paper-footer">
+    <p>
+        {% if doi %}
+        DOI: <a href="https://doi.org/{{ doi }}" target="_blank">{{ doi }}</a>
+        {% endif %}
+        
+        {% if arxiv_id %}
+        | arXiv: <a href="https://arxiv.org/abs/{{ arxiv_id }}" target="_blank">{{ arxiv_id }}</a>
+        {% endif %}
+    </p>
+    
+    <p class="generated-note">
+        Generated with <a href="https://github.com/yourusername/paperflow" target="_blank">Research Paper Template</a>
+    </p>
+</footer>
+{% endblock %}

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <meta name="description" content="{{ abstract | truncate(160) }}">
+    <meta name="keywords" content="{{ keywords | join(', ') }}">
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="{{ page_url }}">
+    <meta property="og:title" content="{{ title }}">
+    <meta property="og:description" content="{{ abstract | truncate(160) }}">
+    <meta property="og:image" content="{{ page_url }}/assets/preview.png">
+    
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="{{ page_url }}">
+    <meta property="twitter:title" content="{{ title }}">
+    <meta property="twitter:description" content="{{ abstract | truncate(160) }}">
+    <meta property="twitter:image" content="{{ page_url }}/assets/preview.png">
+    
+    <!-- Stylesheets -->
+    <link rel="stylesheet" href="assets/style.css">
+    <link rel="stylesheet" href="assets/theme.css">
+    
+    <!-- Math rendering -->
+    {% if math_renderer == 'katex' %}
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"></script>
+    {% elif math_renderer == 'mathjax' %}
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    {% endif %}
+    
+    <!-- Syntax highlighting -->
+    {% if syntax_highlighting %}
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/default.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+    {% endif %}
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/x-icon" href="assets/favicon.ico">
+</head>
+<body>
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+    
+    <!-- Scripts -->
+    <script src="assets/script.js"></script>
+    
+    {% if math_renderer == 'katex' %}
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            renderMathInElement(document.body, {
+                delimiters: [
+                    {left: "$$", right: "$$", display: true},
+                    {left: "$", right: "$", display: false}
+                ]
+            });
+        });
+    </script>
+    {% endif %}
+    
+    {% if syntax_highlighting %}
+    <script>hljs.highlightAll();</script>
+    {% endif %}
+</body>
+</html>

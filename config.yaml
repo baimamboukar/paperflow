@@ -1,0 +1,66 @@
+# Paper Information
+paper:
+  title: "Neural-Enhanced Autonomous Navigation for Deep Space Missions: A Gaussian Mixture Model Approach"
+  authors: 
+    - name: "Sarah Chen"
+      affiliation: "California Institute of Technology, NASA Jet Propulsion Laboratory"
+      url: "https://scholar.google.com/sarah-chen"
+      email: "sarah.chen@jpl.nasa.gov"
+      orcid: "0000-0002-1825-0097"
+    - name: "Marcus Rodriguez"
+      affiliation: "California Institute of Technology"
+      url: "https://orcid.org/0000-0002-1825-0097"
+      email: "m.rodriguez@caltech.edu"
+      orcid: "0000-0002-1825-0097"
+    - name: "Dr. Elena Volkov"
+      affiliation: "MIT Computer Science and Artificial Intelligence Laboratory"
+      url: "https://mit.edu/~evolkov"
+      email: "evolkov@mit.edu"
+      orcid: "0000-0003-2546-1234"
+  abstract: "Autonomous navigation in deep space presents unprecedented challenges due to extreme distances, communication delays, and dynamic celestial mechanics. This paper introduces NeuroNav, a novel neural-enhanced navigation system that combines Gaussian Mixture Models (GMMs) with deep reinforcement learning for real-time trajectory optimization in deep space missions."
+  keywords: ["autonomous navigation", "deep space", "gaussian mixture models", "reinforcement learning", "spacecraft"]
+  arxiv_id: ""  # Optional: arXiv paper ID
+  doi: ""       # Optional: DOI
+  
+# Overleaf Integration
+overleaf:
+  project_id: "your-overleaf-project-id"
+  git_url: "https://git.overleaf.com/your-project-id"
+  
+# Website Settings
+website:
+  theme: "modern"  # modern, academic, minimal
+  show_pdf: true
+  interactive_figures: true
+  math_renderer: "katex"  # katex, mathjax
+  syntax_highlighting: true
+  
+  # Navigation
+  navigation:
+    show_abstract: true
+    show_authors: true
+    show_bibtex: true
+    show_code: true
+    show_supplementary: true
+    
+  # Social media
+  social:
+    twitter_handle: ""
+    github_repo: ""
+    
+# GitHub Pages
+pages:
+  custom_domain: ""  # Optional: your-domain.com
+  cname: false
+  
+# Build Settings
+build:
+  latex_engine: "pdflatex"  # pdflatex, xelatex, lualatex
+  output_format: ["html", "pdf"]
+  
+# Interactive Features
+interactive:
+  enable_comments: false
+  enable_annotations: true
+  enable_figure_zoom: true
+  enable_equation_links: true
