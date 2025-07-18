@@ -1,4 +1,4 @@
-# Research Paper Template
+# PaperFlow
 
 A complete framework for automatically deploying Overleaf research papers as interactive web pages, similar to [textured-gaussians.github.io](https://textured-gaussians.github.io/).
 
