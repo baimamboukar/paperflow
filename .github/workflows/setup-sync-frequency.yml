@@ -1,0 +1,269 @@
+name: "Setup Paperflow Sync Frequency"
+
+on:
+  workflow_dispatch:
+    inputs:
+      sync_frequency:
+        description: 'How often should Paperflow sync with Overleaf?'
+        required: true
+        type: choice
+        options:
+          - 'hourly'    # Every hour: 0 * * * *
+          - 'daily'     # Daily at 2 AM UTC: 0 2 * * *
+          - 'weekly'    # Weekly on Sunday 2 AM UTC: 0 2 * * 0
+          - 'monthly'   # Monthly on 1st at 2 AM UTC: 0 2 1 * *
+          - 'custom'    # User can manually trigger
+        default: 'daily'
+      
+      custom_cron:
+        description: 'Custom cron schedule (only if "custom" is selected above)'
+        required: false
+        default: '0 2 * * *'
+        type: string
+
+      theme:
+        description: 'Website theme'
+        required: false
+        default: 'springer-classic'
+        type: choice
+        options:
+          - 'springer-classic'
+          - 'cosmic-lab'
+          - 'midnight-scholar'
+          - 'coral-reef'
+          - 'zen-garden'
+
+      paper_title:
+        description: 'Paper title (optional - will be extracted from LaTeX if not provided)'
+        required: false
+        default: 'Research Paper'
+        type: string
+
+env:
+  PAPERFLOW_VERSION: "2.0"
+
+jobs:
+  setup-sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate inputs
+        run: |
+          FREQUENCY="${{ github.event.inputs.sync_frequency }}"
+          CUSTOM_CRON="${{ github.event.inputs.custom_cron }}"
+          
+          if [[ "$FREQUENCY" == "custom" && -z "$CUSTOM_CRON" ]]; then
+            echo "::error::Custom cron schedule is required when frequency is set to 'custom'"
+            exit 1
+          fi
+          
+          echo "✅ Input validation passed"
+          echo "📅 Sync frequency: $FREQUENCY"
+          if [[ "$FREQUENCY" == "custom" ]]; then
+            echo "⏰ Custom cron: $CUSTOM_CRON"
+          fi
+
+      - name: Create or update configuration
+        run: |
+          FREQUENCY="${{ github.event.inputs.sync_frequency }}"
+          THEME="${{ github.event.inputs.theme }}"
+          TITLE="${{ github.event.inputs.paper_title }}"
+          CUSTOM_CRON="${{ github.event.inputs.custom_cron }}"
+          
+          # Determine cron schedule
+          case "$FREQUENCY" in
+            "hourly")
+              CRON_SCHEDULE="0 * * * *"
+              ;;
+            "daily")
+              CRON_SCHEDULE="0 2 * * *"
+              ;;
+            "weekly")
+              CRON_SCHEDULE="0 2 * * 0"
+              ;;
+            "monthly")
+              CRON_SCHEDULE="0 2 1 * *"
+              ;;
+            "custom")
+              CRON_SCHEDULE="$CUSTOM_CRON"
+              ;;
+            *)
+              echo "::error::Invalid sync frequency: $FREQUENCY"
+              exit 1
+              ;;
+          esac
+          
+          echo "📝 Creating Paperflow configuration..."
+          
+          # Create configuration file
+          cat > paperflow-config.yml << EOF
+          paperflow:
+            version: "${{ env.PAPERFLOW_VERSION }}"
+            setup_date: "$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            
+            sync:
+              frequency: "$FREQUENCY"
+              cron_schedule: "$CRON_SCHEDULE"
+              auto_deploy: true
+              
+            overleaf:
+              project_url: "\${{ secrets.OVERLEAF_PROJECT_URL }}"
+              
+            website:
+              theme: "$THEME"
+              title: "$TITLE"
+              enable_pdf: true
+              enable_bibtex: true
+              enable_mathjax: true
+              
+            build:
+              latex_engine: "pdflatex"
+              output_format: "html"
+              output_dir: "./docs"
+              
+            github:
+              pages_enabled: true
+              custom_domain: ""
+          EOF
+          
+          echo "✅ Configuration created successfully"
+          cat paperflow-config.yml
+
+      - name: Update workflow schedule
+        run: |
+          FREQUENCY="${{ github.event.inputs.sync_frequency }}"
+          CUSTOM_CRON="${{ github.event.inputs.custom_cron }}"
+          
+          # Determine cron schedule
+          case "$FREQUENCY" in
+            "hourly")
+              CRON_SCHEDULE="0 * * * *"
+              ;;
+            "daily")
+              CRON_SCHEDULE="0 2 * * *"
+              ;;
+            "weekly")
+              CRON_SCHEDULE="0 2 * * 0"
+              ;;
+            "monthly")
+              CRON_SCHEDULE="0 2 1 * *"
+              ;;
+            "custom")
+              CRON_SCHEDULE="$CUSTOM_CRON"
+              ;;
+          esac
+          
+          echo "⚙️ Updating workflow schedule to: $CRON_SCHEDULE"
+          
+          # Update the paperflow-sync.yml workflow file
+          if [[ -f ".github/workflows/paperflow-sync.yml" ]]; then
+            sed -i "s/- cron: '.*'/- cron: '$CRON_SCHEDULE'/" .github/workflows/paperflow-sync.yml
+            echo "✅ Workflow schedule updated"
+          else
+            echo "⚠️ Main sync workflow not found - will use default schedule"
+          fi
+
+      - name: Create setup summary
+        run: |
+          FREQUENCY="${{ github.event.inputs.sync_frequency }}"
+          THEME="${{ github.event.inputs.theme }}"
+          TITLE="${{ github.event.inputs.paper_title }}"
+          
+          cat > setup-summary.md << 'EOF'
+          # Paperflow Setup Complete! 🎉
+          
+          Your Paperflow integration has been configured successfully.
+          
+          ## Configuration Summary
+          
+          **Sync Frequency:** ${{ github.event.inputs.sync_frequency }}
+          **Website Theme:** ${{ github.event.inputs.theme }}
+          **Paper Title:** ${{ github.event.inputs.paper_title }}
+          **Setup Date:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          
+          ## Next Steps
+          
+          1. **Configure Overleaf Git Integration** (Required):
+             - Go to Settings → Secrets and variables → Actions
+             - Add these repository secrets:
+               - `OVERLEAF_GIT_URL`: Your Overleaf Git URL (from Menu → Git)
+               - `OVERLEAF_GIT_TOKEN`: Your Overleaf Git token (from Account Settings)
+          
+          2. **Enable GitHub Pages**:
+             - Go to Settings → Pages
+             - Set Source to "GitHub Actions"
+             - Your website will be available at: `https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/`
+          
+          3. **Test the Integration**:
+             - Go to Actions → "Paperflow - Overleaf Sync & Deploy"
+             - Click "Run workflow" → Enable "Force sync" → Run
+          
+          ## Sync Schedule
+          
+          Based on your selection, Paperflow will automatically sync:
+          EOF
+          
+          case "$FREQUENCY" in
+            "hourly")
+              echo "- **Every hour** at the top of the hour" >> setup-summary.md
+              ;;
+            "daily")
+              echo "- **Every day** at 2:00 AM UTC" >> setup-summary.md
+              ;;
+            "weekly")
+              echo "- **Every Sunday** at 2:00 AM UTC" >> setup-summary.md
+              ;;
+            "monthly")
+              echo "- **Every 1st of the month** at 2:00 AM UTC" >> setup-summary.md
+              ;;
+            "custom")
+              echo "- **Custom schedule:** \`${{ github.event.inputs.custom_cron }}\`" >> setup-summary.md
+              ;;
+          esac
+          
+          cat >> setup-summary.md << 'EOF'
+          
+          ## Support
+          
+          If you need help:
+          - Check the [Paperflow Documentation](https://github.com/your-username/paperflow)
+          - Review workflow logs in the Actions tab
+          - Ensure your Overleaf project has the correct sharing settings
+          
+          ---
+          *Powered by Paperflow v${{ env.PAPERFLOW_VERSION }}*
+          EOF
+          
+          echo "📋 Setup Summary:"
+          cat setup-summary.md
+
+      - name: Commit configuration
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "Paperflow Setup"
+          
+          git add paperflow-config.yml
+          git add .github/workflows/paperflow-sync.yml || true
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "🔧 Configure Paperflow sync: ${{ github.event.inputs.sync_frequency }} with ${{ github.event.inputs.theme }} theme"
+            git push
+            echo "✅ Configuration committed and pushed"
+          fi
+
+      - name: Next steps reminder
+        run: |
+          echo "🎯 Setup Complete!"
+          echo ""
+          echo "⚠️  IMPORTANT: Add these secrets in Settings → Secrets:"
+          echo "   • OVERLEAF_GIT_URL (from Overleaf Menu → Git)"
+          echo "   • OVERLEAF_GIT_TOKEN (from Account Settings → Git Integration)" 
+          echo ""
+          echo "🚀 Then test by running 'Paperflow - Overleaf Sync & Deploy' workflow!"

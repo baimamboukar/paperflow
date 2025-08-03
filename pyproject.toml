@@ -1,20 +1,24 @@
 [build-system]
-requires = ["setuptools>=45", "wheel"]
+requires = ["setuptools>=65.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "paperflow"
-version = "0.1.0"
-description = "A complete template for automatically deploying Overleaf research papers as interactive web pages"
+version = "2.0.0"
+description = "Generate beautiful academic paper websites with ease"
 readme = "README.md"
-requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [
-    {name = "Baimam Boukar Jean Jacques", email = "baimamboukar@gmail.com"}
+    {name = "Paperflow Team", email = "contact@paperflow.dev"}
 ]
+maintainers = [
+    {name = "Paperflow Team", email = "contact@paperflow.dev"}
+]
+keywords = ["academic", "research", "paper", "website", "latex", "html", "generator"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
+    "Intended Audience :: Education",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
@@ -24,101 +28,115 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering",
     "Topic :: Text Processing :: Markup :: LaTeX",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+    "Framework :: Flask",
+    "Framework :: Pydantic",
 ]
+requires-python = ">=3.8"
 dependencies = [
-    "pyyaml>=6.0",
-    "jinja2>=3.1.0",
-    "markdown>=3.4.0",
-    "beautifulsoup4>=4.12.0",
-    "requests>=2.31.0",
-    "pylatexenc>=2.10",
-    "latex2mathml>=3.76.0",
-    "markupsafe>=2.1.0",
-    "pillow>=10.0.0",
-    "pygments>=2.16.0",
+    "pydantic>=2.0.0",
+    "PyYAML>=6.0.0",
+    "typing-extensions>=4.0.0",
+    "Flask>=2.3.0",
+    "Flask-CORS>=4.0.0",
+    "Jinja2>=3.1.0",
+    "aiofiles>=23.0.0",
+    "PyPDF2>=3.0.0",
+    "requests>=2.28.0",
+    "httpx>=0.24.0",
+    "Pillow>=9.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.4.0",
-    "pytest-cov>=4.1.0",
-    "pytest-mock>=3.11.0",
-    "black>=23.7.0",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "pytest-mock>=3.10.0",
+    "black>=23.0.0",
     "flake8>=6.0.0",
-    "mypy>=1.5.0",
+    "mypy>=1.0.0",
+    "isort>=5.12.0",
+    "pre-commit>=3.0.0",
+]
+docs = [
+    "sphinx>=6.0.0",
+    "sphinx-rtd-theme>=1.2.0",
+    "myst-parser>=1.0.0",
+]
+git = [
+    "gitpython>=3.1.0",
+]
+watch = [
+    "watchdog>=3.0.0",
+]
+full = [
+    "paperflow[dev,docs,git,watch]",
+    "jupyter>=1.0.0",
+    "ipykernel>=6.0.0",
+    "memory-profiler>=0.60.0",
+    "line-profiler>=4.0.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/baimamboukar/paperflow"
-Repository = "https://github.com/yourusername/paperflow"
-Documentation = "https://github.com/baimamboukar/paperflow#readme"
-Issues = "https://github.com/baimamboukar/paperflow/issues"
+Homepage = "https://github.com/paperflow/paperflow"
+Documentation = "https://paperflow.github.io/docs"
+Repository = "https://github.com/paperflow/paperflow"
+"Bug Reports" = "https://github.com/paperflow/paperflow/issues"
+Changelog = "https://github.com/paperflow/paperflow/blob/main/CHANGELOG.md"
 
 [project.scripts]
-build-paper = "scripts.build_website:main"
-latex-to-html = "scripts.latex_to_html:main"
+paperflow = "paperflow.cli.main:main"
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py", "*_test.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-addopts = [
-    "--strict-markers",
-    "--strict-config",
-    "--cov=scripts",
-    "--cov-report=term-missing",
-    "--cov-report=html",
-    "--cov-report=xml",
-]
-markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks tests as integration tests",
-    "unit: marks tests as unit tests",
+[tool.setuptools]
+packages = ["paperflow"]
+
+[tool.setuptools.package-dir]
+paperflow = "paperflow"
+
+[tool.setuptools.package-data]
+paperflow = [
+    "templates/*.html",
+    "static/**/*",
+    "themes/*.css",
+    "assets/**/*",
 ]
 
-[tool.coverage.run]
-source = ["scripts"]
-omit = [
-    "*/tests/*",
-    "*/test_*",
-    "*/.venv/*",
-    "*/venv/*",
-]
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "def __repr__",
-    "if self.debug:",
-    "if settings.DEBUG",
-    "raise AssertionError",
-    "raise NotImplementedError",
-    "if 0:",
-    "if __name__ == .__main__.:",
-    "class .*\\bProtocol\\):",
-    "@(abc\\.)?abstractmethod",
-]
-
+# Black configuration
 [tool.black]
 line-length = 88
-target-version = ['py38']
+target-version = ['py38', 'py39', 'py310', 'py311']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | build
-  | dist
-  | docs
+    # Directories
+    \.eggs
+    | \.git
+    | \.hg
+    | \.mypy_cache
+    | \.tox
+    | \.venv
+    | venv
+    | _build
+    | buck-out
+    | build
+    | dist
+    | node_modules
 )/
 '''
 
+# isort configuration
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+
+# MyPy configuration
 [tool.mypy]
 python_version = "3.8"
 warn_return_any = true
@@ -137,24 +155,65 @@ strict_equality = true
 [[tool.mypy.overrides]]
 module = [
     "yaml.*",
-    "jinja2.*",
-    "markdown.*",
-    "bs4.*",
-    "pylatexenc.*",
-    "latex2mathml.*",
+    "PIL.*",
+    "PyPDF2.*",
 ]
 ignore_missing_imports = true
 
+# Pytest configuration
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "--cov=paperflow",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml",
+]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+]
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["paperflow"]
+omit = [
+    "paperflow/cli/*",
+    "tests/*",
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+# Flake8 configuration (in setup.cfg format for compatibility)
 [tool.flake8]
 max-line-length = 88
 extend-ignore = ["E203", "W503"]
 exclude = [
     ".git",
     "__pycache__",
-    "docs/source/conf.py",
-    "old",
-    "build",
     "dist",
+    "build",
+    "*.egg-info",
     ".venv",
     "venv",
 ]

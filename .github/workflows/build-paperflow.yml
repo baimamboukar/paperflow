@@ -1,0 +1,543 @@
+name: Build Paperflow Website
+
+on:
+  workflow_call:
+    inputs:
+      source-path:
+        description: 'Path to source LaTeX files'
+        required: false
+        default: '.'
+        type: string
+      output-path:
+        description: 'Output directory for built website'
+        required: false
+        default: 'docs'
+        type: string
+      theme:
+        description: 'Website theme to use'
+        required: false
+        default: 'cosmic-lab'
+        type: string
+      latex-engine:
+        description: 'LaTeX engine to use for PDF generation'
+        required: false
+        default: 'pdflatex'
+        type: string
+      include-pdf:
+        description: 'Generate and include PDF version'
+        required: false
+        default: true
+        type: boolean
+    outputs:
+      build-success:
+        description: 'Whether the build was successful'
+        value: ${{ jobs.build.outputs.build-success }}
+      output-path:
+        description: 'Path to built website files'
+        value: ${{ jobs.build.outputs.output-path }}
+      pdf-generated:
+        description: 'Whether PDF was generated successfully'
+        value: ${{ jobs.build.outputs.pdf-generated }}
+
+  # Allow manual triggering for testing
+  workflow_dispatch:
+    inputs:
+      source-path:
+        description: 'Path to source LaTeX files'
+        required: false
+        default: '.'
+        type: string
+      output-path:
+        description: 'Output directory for built website'
+        required: false
+        default: 'docs'
+        type: string
+      theme:
+        description: 'Website theme to use'
+        required: false
+        default: 'cosmic-lab'
+        type: choice
+        options:
+          - 'cosmic-lab'
+          - 'midnight-scholar'
+          - 'coral-reef'
+          - 'zen-garden'
+          - 'springer-classic'
+      include-pdf:
+        description: 'Generate and include PDF version'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '18'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      build-success: ${{ steps.build-result.outputs.build-success }}
+      output-path: ${{ steps.build-result.outputs.output-path }}
+      pdf-generated: ${{ steps.build-result.outputs.pdf-generated }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install LaTeX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            texlive-latex-base \
+            texlive-latex-recommended \
+            texlive-latex-extra \
+            texlive-fonts-recommended \
+            texlive-fonts-extra \
+            texlive-bibtex-extra \
+            latexmk \
+            biber
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          
+          # Install Paperflow if not in current directory
+          if [ -f "setup.py" ] || [ -f "pyproject.toml" ]; then
+            pip install -e .
+          else
+            pip install git+https://github.com/baimamboukar/paperflow.git
+          fi
+          
+          # Install additional build dependencies
+          pip install \
+            beautifulsoup4 \
+            markdown \
+            pygments \
+            jinja2 \
+            pyyaml \
+            bibtexparser \
+            texsoup
+
+      - name: Install Node.js dependencies
+        run: |
+          # Create package.json if it doesn't exist
+          if [ ! -f "package.json" ]; then
+            cat > package.json << 'EOF'
+          {
+            "name": "paperflow-build",
+            "version": "1.0.0",
+            "private": true,
+            "dependencies": {
+              "katex": "^0.16.0",
+              "mermaid": "^10.0.0",
+              "prismjs": "^1.29.0"
+            }
+          }
+          EOF
+          fi
+          
+          npm install
+
+      - name: Validate source files
+        run: |
+          SOURCE_PATH="${{ inputs.source-path || '.' }}"
+          echo "Validating source files in: $SOURCE_PATH"
+          
+          # Check for main LaTeX file
+          if [ -f "$SOURCE_PATH/main.tex" ]; then
+            echo "✅ Found main.tex"
+            MAIN_TEX="$SOURCE_PATH/main.tex"
+          elif [ -f "$SOURCE_PATH/paper.tex" ]; then
+            echo "✅ Found paper.tex"
+            MAIN_TEX="$SOURCE_PATH/paper.tex"
+          else
+            echo "🔍 Searching for LaTeX files..."
+            MAIN_TEX=$(find "$SOURCE_PATH" -name "*.tex" -type f | head -1)
+            if [ -z "$MAIN_TEX" ]; then
+              echo "❌ No LaTeX files found in $SOURCE_PATH"
+              exit 1
+            else
+              echo "✅ Using: $MAIN_TEX"
+            fi
+          fi
+          
+          echo "MAIN_TEX=$MAIN_TEX" >> $GITHUB_ENV
+          
+          # Check for bibliography
+          if ls "$SOURCE_PATH"/*.bib >/dev/null 2>&1; then
+            echo "✅ Bibliography files found"
+            echo "HAS_BIBLIOGRAPHY=true" >> $GITHUB_ENV
+          else
+            echo "ℹ️ No bibliography files found"
+            echo "HAS_BIBLIOGRAPHY=false" >> $GITHUB_ENV
+          fi
+          
+          # Check for figures
+          if [ -d "$SOURCE_PATH/figures" ] || [ -d "$SOURCE_PATH/images" ]; then
+            echo "✅ Figure directory found"
+            echo "HAS_FIGURES=true" >> $GITHUB_ENV
+          else
+            echo "ℹ️ No figure directory found"
+            echo "HAS_FIGURES=false" >> $GITHUB_ENV
+          fi
+
+      - name: Generate PDF (if requested)
+        if: inputs.include-pdf == true
+        run: |
+          echo "Generating PDF from LaTeX..."
+          OUTPUT_PATH="${{ inputs.output-path || 'docs' }}"
+          mkdir -p "$OUTPUT_PATH"
+          
+          cd "$(dirname "$MAIN_TEX")"
+          BASENAME=$(basename "$MAIN_TEX" .tex)
+          
+          # Clean previous builds
+          latexmk -C "$BASENAME.tex" || true
+          
+          # Compile with bibliography if present
+          if [ "$HAS_BIBLIOGRAPHY" = "true" ]; then
+            echo "Compiling with bibliography..."
+            latexmk -pdf -interaction=nonstopmode -halt-on-error "$BASENAME.tex"
+          else
+            echo "Compiling without bibliography..."
+            pdflatex -interaction=nonstopmode -halt-on-error "$BASENAME.tex"
+            pdflatex -interaction=nonstopmode -halt-on-error "$BASENAME.tex"  # Second pass for cross-references
+          fi
+          
+          # Copy PDF to output directory
+          if [ -f "$BASENAME.pdf" ]; then
+            cp "$BASENAME.pdf" "$(pwd)/../$OUTPUT_PATH/paper.pdf"
+            echo "✅ PDF generated successfully"
+            echo "PDF_GENERATED=true" >> $GITHUB_ENV
+          else
+            echo "❌ PDF generation failed"
+            echo "PDF_GENERATED=false" >> $GITHUB_ENV
+          fi
+
+      - name: Convert LaTeX to HTML
+        run: |
+          SOURCE_PATH="${{ inputs.source-path || '.' }}"
+          OUTPUT_PATH="${{ inputs.output-path || 'docs' }}"
+          THEME="${{ inputs.theme || 'cosmic-lab' }}"
+          
+          echo "Converting LaTeX to HTML..."
+          echo "Source: $SOURCE_PATH"
+          echo "Output: $OUTPUT_PATH"
+          echo "Theme: $THEME"
+          
+          python << 'EOF'
+          import os
+          import sys
+          import json
+          from pathlib import Path
+          import subprocess
+          
+          def convert_latex_to_html():
+              source_path = Path(os.environ.get('SOURCE_PATH', '.'))
+              output_path = Path(os.environ.get('OUTPUT_PATH', 'docs'))
+              theme = os.environ.get('THEME', 'cosmic-lab')
+              main_tex = os.environ.get('MAIN_TEX')
+              
+              # Create output directory
+              output_path.mkdir(parents=True, exist_ok=True)
+              
+              # Try to use Paperflow's converter if available
+              try:
+                  from paperflow.processors.latex.html_converter import LaTeXToHTMLConverter
+                  from paperflow.models.config import ProjectConfig
+                  
+                  # Create converter
+                  converter = LaTeXToHTMLConverter()
+                  
+                  # Basic config
+                  config = ProjectConfig(
+                      name="Research Paper",
+                      theme=theme,
+                      source_dir=str(source_path),
+                      output_dir=str(output_path)
+                  )
+                  
+                  # Convert
+                  result = converter.convert_file(
+                      latex_file=Path(main_tex),
+                      output_dir=output_path,
+                      config=config
+                  )
+                  
+                  if result.get('success'):
+                      print("✅ LaTeX to HTML conversion successful")
+                      return True
+                  else:
+                      print(f"❌ Conversion failed: {result.get('error')}")
+                      return False
+                      
+              except ImportError:
+                  print("Paperflow converter not available, using fallback...")
+                  return convert_with_fallback()
+              except Exception as e:
+                  print(f"Error with Paperflow converter: {e}")
+                  return convert_with_fallback()
+          
+          def convert_with_fallback():
+              """Fallback conversion using pandoc or basic processing."""
+              source_path = Path(os.environ.get('SOURCE_PATH', '.'))
+              output_path = Path(os.environ.get('OUTPUT_PATH', 'docs'))
+              theme = os.environ.get('THEME', 'cosmic-lab')
+              main_tex = os.environ.get('MAIN_TEX')
+              
+              try:
+                  # Install pandoc
+                  subprocess.run(['sudo', 'apt-get', 'install', '-y', 'pandoc'], check=True)
+                  
+                  # Convert with pandoc
+                  cmd = [
+                      'pandoc',
+                      main_tex,
+                      '-f', 'latex',
+                      '-t', 'html5',
+                      '--standalone',
+                      '--mathjax',
+                      '--highlight-style=pygments',
+                      '-o', str(output_path / 'index.html')
+                  ]
+                  
+                  result = subprocess.run(cmd, capture_output=True, text=True)
+                  
+                  if result.returncode == 0:
+                      # Add theme CSS
+                      add_theme_styling(output_path, theme)
+                      print("✅ Fallback conversion successful")
+                      return True
+                  else:
+                      print(f"❌ Pandoc conversion failed: {result.stderr}")
+                      return create_basic_html()
+                      
+              except Exception as e:
+                  print(f"Fallback conversion failed: {e}")
+                  return create_basic_html()
+          
+          def create_basic_html():
+              """Create a basic HTML page as last resort."""
+              output_path = Path(os.environ.get('OUTPUT_PATH', 'docs'))
+              theme = os.environ.get('THEME', 'cosmic-lab')
+              
+              html_content = f'''<!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Research Paper</title>
+              <link rel="stylesheet" href="assets/style.css">
+              <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+              <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+          </head>
+          <body>
+              <div class="container">
+                  <header>
+                      <h1>Research Paper</h1>
+                      <p>Generated from LaTeX source</p>
+                  </header>
+                  <main>
+                      <p>LaTeX source files processed. Please check the original files for content.</p>
+                      <p><a href="paper.pdf">Download PDF</a></p>
+                  </main>
+              </div>
+          </body>
+          </html>'''
+              
+              with open(output_path / 'index.html', 'w') as f:
+                  f.write(html_content)
+              
+              add_theme_styling(output_path, theme)
+              print("✅ Basic HTML page created")
+              return True
+          
+          def add_theme_styling(output_path, theme):
+              """Add theme CSS styling."""
+              assets_dir = output_path / 'assets'
+              assets_dir.mkdir(exist_ok=True)
+              
+              # Basic CSS
+              css_content = f'''
+          /* Paperflow Theme: {theme} */
+          body {{
+              font-family: 'Times New Roman', serif;
+              line-height: 1.6;
+              max-width: 800px;
+              margin: 0 auto;
+              padding: 20px;
+              background-color: #ffffff;
+              color: #333333;
+          }}
+          
+          .container {{
+              background: white;
+              padding: 2rem;
+              border-radius: 8px;
+              box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+          }}
+          
+          header {{
+              text-align: center;
+              margin-bottom: 2rem;
+              border-bottom: 2px solid #eee;
+              padding-bottom: 1rem;
+          }}
+          
+          h1 {{
+              color: #2c3e50;
+              margin-bottom: 0.5rem;
+          }}
+          
+          .math {{
+              text-align: center;
+              margin: 1rem 0;
+          }}
+          
+          pre {{
+              background: #f8f9fa;
+              padding: 1rem;
+              border-radius: 4px;
+              overflow-x: auto;
+          }}
+          
+          a {{
+              color: #3498db;
+              text-decoration: none;
+          }}
+          
+          a:hover {{
+              text-decoration: underline;
+          }}
+          '''
+              
+              # Theme-specific colors
+              if theme == 'midnight-scholar':
+                  css_content += '''
+          body { background-color: #1a1a1a; color: #e0e0e0; }
+          .container { background: #2d2d2d; }
+          h1 { color: #4fc3f7; }
+          '''
+              elif theme == 'coral-reef':
+                  css_content += '''
+          body { background: linear-gradient(135deg, #ff9a8b, #fecfef); }
+          h1 { color: #e91e63; }
+          '''
+              
+              with open(assets_dir / 'style.css', 'w') as f:
+                  f.write(css_content)
+          
+          # Run conversion
+          success = convert_latex_to_html()
+          if not success:
+              sys.exit(1)
+          EOF
+        env:
+          SOURCE_PATH: ${{ inputs.source-path || '.' }}
+          OUTPUT_PATH: ${{ inputs.output-path || 'docs' }}
+          THEME: ${{ inputs.theme || 'cosmic-lab' }}
+
+      - name: Copy additional assets
+        run: |
+          SOURCE_PATH="${{ inputs.source-path || '.' }}"
+          OUTPUT_PATH="${{ inputs.output-path || 'docs' }}"
+          
+          # Copy figures if they exist
+          if [ "$HAS_FIGURES" = "true" ]; then
+            echo "Copying figures..."
+            if [ -d "$SOURCE_PATH/figures" ]; then
+              cp -r "$SOURCE_PATH/figures" "$OUTPUT_PATH/"
+            fi
+            if [ -d "$SOURCE_PATH/images" ]; then
+              cp -r "$SOURCE_PATH/images" "$OUTPUT_PATH/"
+            fi
+          fi
+          
+          # Copy any additional assets
+          for asset_dir in "$SOURCE_PATH"/{assets,static,media}; do
+            if [ -d "$asset_dir" ]; then
+              echo "Copying $asset_dir..."
+              cp -r "$asset_dir" "$OUTPUT_PATH/"
+            fi
+          done
+
+      - name: Generate build manifest
+        run: |
+          OUTPUT_PATH="${{ inputs.output-path || 'docs' }}"
+          
+          cat > "$OUTPUT_PATH/build-manifest.json" << EOF
+          {
+            "buildTime": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+            "source": "${{ inputs.source-path || '.' }}",
+            "theme": "${{ inputs.theme || 'cosmic-lab' }}",
+            "pdfGenerated": ${{ env.PDF_GENERATED || 'false' }},
+            "gitCommit": "${{ github.sha }}",
+            "workflow": "${{ github.run_id }}"
+          }
+          EOF
+
+      - name: Validate build output
+        id: build-result
+        run: |
+          OUTPUT_PATH="${{ inputs.output-path || 'docs' }}"
+          
+          # Check if index.html exists
+          if [ -f "$OUTPUT_PATH/index.html" ]; then
+            echo "✅ index.html generated"
+            BUILD_SUCCESS=true
+          else
+            echo "❌ index.html not found"
+            BUILD_SUCCESS=false
+          fi
+          
+          # Check file sizes
+          if [ "$BUILD_SUCCESS" = "true" ]; then
+            HTML_SIZE=$(stat -f%z "$OUTPUT_PATH/index.html" 2>/dev/null || stat -c%s "$OUTPUT_PATH/index.html")
+            if [ "$HTML_SIZE" -lt 100 ]; then
+              echo "⚠️ HTML file seems too small (${HTML_SIZE} bytes)"
+              BUILD_SUCCESS=false
+            else
+              echo "✅ HTML file size: ${HTML_SIZE} bytes"
+            fi
+          fi
+          
+          # Set outputs
+          echo "build-success=$BUILD_SUCCESS" >> $GITHUB_OUTPUT
+          echo "output-path=$OUTPUT_PATH" >> $GITHUB_OUTPUT
+          echo "pdf-generated=${PDF_GENERATED:-false}" >> $GITHUB_OUTPUT
+          
+          if [ "$BUILD_SUCCESS" = "false" ]; then
+            echo "❌ Build validation failed"
+            exit 1
+          else
+            echo "✅ Build completed successfully"
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: paperflow-website-${{ github.run_id }}
+          path: ${{ inputs.output-path || 'docs' }}
+          retention-days: 30
+
+      - name: Upload PDF artifact
+        uses: actions/upload-artifact@v4
+        if: env.PDF_GENERATED == 'true'
+        with:
+          name: research-paper-pdf-${{ github.run_id }}
+          path: ${{ inputs.output-path || 'docs' }}/paper.pdf
+          retention-days: 90

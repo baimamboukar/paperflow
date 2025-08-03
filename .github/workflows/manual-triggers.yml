@@ -1,0 +1,472 @@
+name: Paperflow Manual Triggers
+
+on:
+  # Repository dispatch for external API calls
+  repository_dispatch:
+    types: 
+      - paperflow-sync
+      - paperflow-build
+      - paperflow-deploy
+      - paperflow-full-pipeline
+
+  # Manual workflow dispatch for easy triggering
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'full-pipeline'
+        type: choice
+        options:
+          - 'sync-only'
+          - 'build-only'
+          - 'deploy-only'
+          - 'full-pipeline'
+      force_sync:
+        description: 'Force sync even if no changes detected'
+        required: false
+        default: false
+        type: boolean
+      build_theme:
+        description: 'Override build theme'
+        required: false
+        type: choice
+        options:
+          - 'default'
+          - 'cosmic-lab'
+          - 'midnight-scholar'
+          - 'coral-reef'
+          - 'zen-garden'
+          - 'springer-classic'
+      skip_pdf:
+        description: 'Skip PDF generation'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # Determine what actions to run based on trigger
+  determine-actions:
+    runs-on: ubuntu-latest
+    outputs:
+      run-sync: ${{ steps.plan.outputs.run-sync }}
+      run-build: ${{ steps.plan.outputs.run-build }}
+      run-deploy: ${{ steps.plan.outputs.run-deploy }}
+      force-sync: ${{ steps.plan.outputs.force-sync }}
+      build-theme: ${{ steps.plan.outputs.build-theme }}
+      skip-pdf: ${{ steps.plan.outputs.skip-pdf }}
+    
+    steps:
+      - name: Determine execution plan
+        id: plan
+        run: |
+          # Default values
+          RUN_SYNC=false
+          RUN_BUILD=false
+          RUN_DEPLOY=false
+          FORCE_SYNC=false
+          BUILD_THEME="default"
+          SKIP_PDF=false
+          
+          # Handle workflow_dispatch
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ACTION="${{ github.event.inputs.action }}"
+            FORCE_SYNC="${{ github.event.inputs.force_sync }}"
+            BUILD_THEME="${{ github.event.inputs.build_theme || 'default' }}"
+            SKIP_PDF="${{ github.event.inputs.skip_pdf }}"
+            
+            case "$ACTION" in
+              "sync-only")
+                RUN_SYNC=true
+                ;;
+              "build-only")
+                RUN_BUILD=true
+                ;;
+              "deploy-only")
+                RUN_DEPLOY=true
+                ;;
+              "full-pipeline"|*)
+                RUN_SYNC=true
+                RUN_BUILD=true
+                RUN_DEPLOY=true
+                ;;
+            esac
+          fi
+          
+          # Handle repository_dispatch
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            ACTION_TYPE="${{ github.event.action }}"
+            
+            # Extract parameters from client_payload if available
+            if [ -n "${{ github.event.client_payload.force_sync }}" ]; then
+              FORCE_SYNC="${{ github.event.client_payload.force_sync }}"
+            fi
+            
+            if [ -n "${{ github.event.client_payload.theme }}" ]; then
+              BUILD_THEME="${{ github.event.client_payload.theme }}"
+            fi
+            
+            if [ -n "${{ github.event.client_payload.skip_pdf }}" ]; then
+              SKIP_PDF="${{ github.event.client_payload.skip_pdf }}"
+            fi
+            
+            case "$ACTION_TYPE" in
+              "paperflow-sync")
+                RUN_SYNC=true
+                ;;
+              "paperflow-build")
+                RUN_BUILD=true
+                ;;
+              "paperflow-deploy")
+                RUN_DEPLOY=true
+                ;;
+              "paperflow-full-pipeline"|*)
+                RUN_SYNC=true
+                RUN_BUILD=true
+                RUN_DEPLOY=true
+                ;;
+            esac
+          fi
+          
+          echo "run-sync=$RUN_SYNC" >> $GITHUB_OUTPUT
+          echo "run-build=$RUN_BUILD" >> $GITHUB_OUTPUT
+          echo "run-deploy=$RUN_DEPLOY" >> $GITHUB_OUTPUT
+          echo "force-sync=$FORCE_SYNC" >> $GITHUB_OUTPUT
+          echo "build-theme=$BUILD_THEME" >> $GITHUB_OUTPUT
+          echo "skip-pdf=$SKIP_PDF" >> $GITHUB_OUTPUT
+          
+          echo "📋 Execution Plan:"
+          echo "  - Sync: $RUN_SYNC"
+          echo "  - Build: $RUN_BUILD"
+          echo "  - Deploy: $RUN_DEPLOY"
+          echo "  - Force Sync: $FORCE_SYNC"
+          echo "  - Theme: $BUILD_THEME"
+          echo "  - Skip PDF: $SKIP_PDF"
+
+  # Sync from Overleaf
+  sync-from-overleaf:
+    needs: determine-actions
+    if: needs.determine-actions.outputs.run-sync == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      changes-detected: ${{ steps.sync.outputs.changes-detected }}
+      sync-success: ${{ steps.sync.outputs.sync-success }}
+      commit-hash: ${{ steps.sync.outputs.commit-hash }}
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests PyYAML gitpython python-dotenv
+          pip install git+https://github.com/jcc-org/PyOverleaf.git
+
+      - name: Validate secrets
+        run: |
+          if [ -z "${{ secrets.OVERLEAF_USERNAME }}" ] || [ -z "${{ secrets.OVERLEAF_PASSWORD }}" ] || [ -z "${{ secrets.OVERLEAF_PROJECT_URL }}" ]; then
+            echo "❌ Missing required Overleaf secrets"
+            echo "Please ensure OVERLEAF_USERNAME, OVERLEAF_PASSWORD, and OVERLEAF_PROJECT_URL are set"
+            exit 1
+          fi
+          echo "✅ Overleaf credentials validated"
+
+      - name: Sync from Overleaf
+        id: sync
+        run: |
+          python << 'EOF'
+          import os
+          import sys
+          import subprocess
+          import tempfile
+          import shutil
+          from pathlib import Path
+          import hashlib
+          import json
+          from datetime import datetime
+          
+          try:
+              from pyoverleaf import OverleafClient
+          except ImportError:
+              subprocess.check_call([sys.executable, "-m", "pip", "install", "git+https://github.com/jcc-org/PyOverleaf.git"])
+              from pyoverleaf import OverleafClient
+          
+          def get_file_hash(file_path):
+              if not file_path.exists():
+                  return None
+              with open(file_path, 'rb') as f:
+                  return hashlib.md5(f.read()).hexdigest()
+          
+          def sync_overleaf():
+              username = os.environ['OVERLEAF_USERNAME']
+              password = os.environ['OVERLEAF_PASSWORD']
+              project_url = os.environ['OVERLEAF_PROJECT_URL']
+              force_sync = os.environ.get('FORCE_SYNC', 'false').lower() == 'true'
+              
+              # Extract project ID from URL
+              project_id = project_url.split('/')[-1]
+              if not project_id:
+                  raise ValueError("Could not extract project ID from URL")
+              
+              print(f"🔄 Syncing from Overleaf project: {project_id}")
+              if force_sync:
+                  print("🔄 Force sync enabled - all files will be updated")
+              
+              # Create Overleaf client and login
+              client = OverleafClient()
+              client.login(username, password)
+              
+              # Get project details
+              project = client.get_project(project_id)
+              print(f"📄 Project: {project.get('name', 'Unknown')}")
+              
+              # Download and sync files
+              with tempfile.TemporaryDirectory() as temp_dir:
+                  temp_path = Path(temp_dir)
+                  client.download_project(project_id, temp_path)
+                  
+                  changes_detected = False
+                  repo_root = Path('.')
+                  
+                  # Process files
+                  for file_path in temp_path.rglob('*'):
+                      if file_path.is_file():
+                          rel_path = file_path.relative_to(temp_path)
+                          target_path = repo_root / rel_path
+                          
+                          # Skip hidden files and directories
+                          if any(part.startswith('.') for part in rel_path.parts):
+                              continue
+                          
+                          old_hash = get_file_hash(target_path)
+                          new_hash = get_file_hash(file_path)
+                          
+                          if force_sync or old_hash != new_hash:
+                              changes_detected = True
+                              print(f"📝 {'Updating' if old_hash else 'Adding'}: {rel_path}")
+                              
+                              target_path.parent.mkdir(parents=True, exist_ok=True)
+                              shutil.copy2(file_path, target_path)
+                  
+                  return changes_detected
+          
+          try:
+              changes = sync_overleaf()
+              print(f"✅ Sync completed. Changes detected: {changes}")
+              
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write(f"changes-detected={'true' if changes else 'false'}\n")
+                  f.write(f"sync-success=true\n")
+              
+          except Exception as e:
+              print(f"❌ Sync failed: {e}")
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write(f"changes-detected=false\n")
+                  f.write(f"sync-success=false\n")
+              sys.exit(1)
+          EOF
+        env:
+          OVERLEAF_USERNAME: ${{ secrets.OVERLEAF_USERNAME }}
+          OVERLEAF_PASSWORD: ${{ secrets.OVERLEAF_PASSWORD }}
+          OVERLEAF_PROJECT_URL: ${{ secrets.OVERLEAF_PROJECT_URL }}
+          FORCE_SYNC: ${{ needs.determine-actions.outputs.force-sync }}
+
+      - name: Commit changes
+        if: steps.sync.outputs.changes-detected == 'true'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "Paperflow Manual Sync"
+          
+          git add .
+          
+          TRIGGER_TYPE="manual"
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            TRIGGER_TYPE="API (repository_dispatch)"
+          fi
+          
+          COMMIT_MSG="📄 Manual sync from Overleaf - $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+
+Triggered via: $TRIGGER_TYPE
+Force sync: ${{ needs.determine-actions.outputs.force-sync }}
+Actor: ${{ github.actor }}"
+          
+          git commit -m "$COMMIT_MSG" || echo "No changes to commit"
+          git push
+          
+          COMMIT_HASH=$(git rev-parse HEAD)
+          echo "commit-hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
+
+  # Build website
+  build-website:
+    needs: [determine-actions, sync-from-overleaf]
+    if: |
+      always() &&
+      needs.determine-actions.outputs.run-build == 'true' &&
+      (
+        needs.sync-from-overleaf.result == 'skipped' ||
+        (
+          needs.sync-from-overleaf.result == 'success' &&
+          (
+            needs.sync-from-overleaf.outputs.changes-detected == 'true' ||
+            needs.determine-actions.outputs.force-sync == 'true'
+          )
+        )
+      )
+    uses: ./.github/workflows/build-paperflow.yml
+    with:
+      source-path: '.'
+      output-path: 'docs'
+      theme: ${{ needs.determine-actions.outputs.build-theme == 'default' && 'cosmic-lab' || needs.determine-actions.outputs.build-theme }}
+      include-pdf: ${{ needs.determine-actions.outputs.skip-pdf != 'true' }}
+
+  # Deploy to GitHub Pages
+  deploy-to-pages:
+    needs: [determine-actions, sync-from-overleaf, build-website]
+    if: |
+      always() &&
+      needs.determine-actions.outputs.run-deploy == 'true' &&
+      (
+        needs.build-website.result == 'success' ||
+        (
+          needs.build-website.result == 'skipped' &&
+          needs.determine-actions.outputs.run-deploy == 'true'
+        )
+      )
+    uses: ./.github/workflows/deploy-paperflow.yml
+    with:
+      build-path: 'docs'
+      commit-hash: ${{ needs.sync-from-overleaf.outputs.commit-hash || github.sha }}
+    permissions:
+      pages: write
+      id-token: write
+
+  # Notify completion
+  notify-completion:
+    needs: [determine-actions, sync-from-overleaf, build-website, deploy-to-pages]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Generate completion summary
+        run: |
+          echo "# 🎯 Manual Trigger Completion Summary"
+          echo ""
+          echo "**Triggered by:** ${{ github.actor }}"
+          echo "**Trigger type:** ${{ github.event_name }}"
+          echo "**Timestamp:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo ""
+          
+          # Sync status
+          if [ "${{ needs.determine-actions.outputs.run-sync }}" = "true" ]; then
+            echo "## 🔄 Sync Results"
+            if [ "${{ needs.sync-from-overleaf.result }}" = "success" ]; then
+              echo "✅ **Status:** Successful"
+              echo "📝 **Changes detected:** ${{ needs.sync-from-overleaf.outputs.changes-detected }}"
+              echo "🔧 **Force sync:** ${{ needs.determine-actions.outputs.force-sync }}"
+            else
+              echo "❌ **Status:** Failed"
+            fi
+            echo ""
+          fi
+          
+          # Build status
+          if [ "${{ needs.determine-actions.outputs.run-build }}" = "true" ]; then
+            echo "## 🏗️ Build Results"
+            if [ "${{ needs.build-website.result }}" = "success" ]; then
+              echo "✅ **Status:** Successful"
+              echo "🎨 **Theme:** ${{ needs.determine-actions.outputs.build-theme }}"
+              echo "📄 **PDF generated:** ${{ needs.determine-actions.outputs.skip-pdf != 'true' && 'Yes' || 'No' }}"
+            elif [ "${{ needs.build-website.result }}" = "skipped" ]; then
+              echo "⏭️ **Status:** Skipped (no changes)"
+            else
+              echo "❌ **Status:** Failed"
+            fi
+            echo ""
+          fi
+          
+          # Deploy status
+          if [ "${{ needs.determine-actions.outputs.run-deploy }}" = "true" ]; then
+            echo "## 🚀 Deployment Results"
+            if [ "${{ needs.deploy-to-pages.result }}" = "success" ]; then
+              echo "✅ **Status:** Successful"
+              echo "🌐 **Website updated**"
+            elif [ "${{ needs.deploy-to-pages.result }}" = "skipped" ]; then
+              echo "⏭️ **Status:** Skipped"
+            else
+              echo "❌ **Status:** Failed"
+            fi
+            echo ""
+          fi
+          
+          # Overall status
+          OVERALL_SUCCESS=true
+          if [[ ("${{ needs.sync-from-overleaf.result }}" = "failure") ||
+                ("${{ needs.build-website.result }}" = "failure") ||
+                ("${{ needs.deploy-to-pages.result }}" = "failure") ]]; then
+            OVERALL_SUCCESS=false
+          fi
+          
+          if [ "$OVERALL_SUCCESS" = "true" ]; then
+            echo "## 🎉 Overall Status: Success"
+            echo "All requested operations completed successfully!"
+          else
+            echo "## ⚠️ Overall Status: Partial Failure"
+            echo "Some operations failed. Please check the workflow logs."
+          fi
+
+      - name: Create API response file
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          # Create a response file for API callers
+          cat > api-response.json << EOF
+          {
+            "workflow_id": "${{ github.run_id }}",
+            "status": "${{ (needs.sync-from-overleaf.result != 'failure' && needs.build-website.result != 'failure' && needs.deploy-to-pages.result != 'failure') && 'success' || 'failure' }}",
+            "timestamp": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+            "results": {
+              "sync": {
+                "requested": ${{ needs.determine-actions.outputs.run-sync }},
+                "status": "${{ needs.sync-from-overleaf.result }}",
+                "changes_detected": ${{ needs.sync-from-overleaf.outputs.changes-detected || 'null' }}
+              },
+              "build": {
+                "requested": ${{ needs.determine-actions.outputs.run-build }},
+                "status": "${{ needs.build-website.result }}",
+                "theme": "${{ needs.determine-actions.outputs.build-theme }}"
+              },
+              "deploy": {
+                "requested": ${{ needs.determine-actions.outputs.run-deploy }},
+                "status": "${{ needs.deploy-to-pages.result }}"
+              }
+            },
+            "trigger": {
+              "type": "${{ github.event.action }}",
+              "actor": "${{ github.actor }}",
+              "payload": ${{ toJson(github.event.client_payload) }}
+            }
+          }
+          EOF
+          
+          echo "📄 API response file created"
+
+      - name: Upload response artifact
+        if: github.event_name == 'repository_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-response-${{ github.run_id }}
+          path: api-response.json
+          retention-days: 7

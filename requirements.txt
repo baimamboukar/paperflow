@@ -1,25 +1,62 @@
-# Core dependencies
-pyyaml>=6.0
-jinja2>=3.1.0
-markdown>=3.4.0
-beautifulsoup4>=4.12.0
-requests>=2.31.0
+# Paperflow Framework Dependencies
 
-# LaTeX processing
-pylatexenc>=2.10
-latex2mathml>=3.76.0
+# Core Dependencies
+pydantic>=2.0.0
+PyYAML>=6.0.0
+typing-extensions>=4.0.0
 
-# Web template rendering
-markupsafe>=2.1.0
+# Web Server and API Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+websockets>=12.0
 
-# Development dependencies
-pytest>=7.4.0
-pytest-cov>=4.1.0
-pytest-mock>=3.11.0
-black>=23.7.0
+# Traditional Web Support (optional)
+Flask>=2.3.0
+Flask-CORS>=4.0.0
+Jinja2>=3.1.0
+
+# Async Support
+aiofiles>=23.0.0
+asyncio-mqtt>=0.16.0
+
+# Background Tasks
+celery>=5.3.0
+redis>=5.0.0
+
+# LaTeX and PDF Processing
+PyPDF2>=3.0.0
+bibtexparser>=1.4.0
+TexSoup>=0.3.1
+
+# HTTP Requests and API Client
+requests>=2.28.0
+httpx>=0.24.0
+
+# Authentication and Security
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.6
+
+# Rate Limiting and Middleware
+slowapi>=0.1.9
+starlette-context>=0.3.6
+
+# File Processing
+Pillow>=9.0.0
+
+# Git Integration and Credential Management
+keyring>=24.0.0
+
+# Development and Testing
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+black>=23.0.0
 flake8>=6.0.0
-mypy>=1.5.0
+mypy>=1.0.0
 
-# Optional dependencies for enhanced features
-pillow>=10.0.0  # For image processing
-pygments>=2.16.0  # For syntax highlighting
+# Optional: For enhanced features
+# Uncomment as needed
+# gitpython>=3.1.0  # For Git integration
+# watchdog>=3.0.0   # For file watching
+# python-dotenv>=1.0.0  # For .env file support

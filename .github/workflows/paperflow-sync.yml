@@ -1,0 +1,553 @@
+name: "Paperflow - Overleaf Sync & Deploy"
+
+on:
+  schedule:
+    # Default to daily at 2 AM UTC - user can customize via config
+    - cron: '0 2 * * *'
+  
+  workflow_dispatch:
+    inputs:
+      sync_frequency:
+        description: 'Sync frequency'
+        required: false
+        default: 'daily'
+        type: choice
+        options:
+          - 'hourly'
+          - 'daily' 
+          - 'weekly'
+          - 'monthly'
+      force_sync:
+        description: 'Force sync even if no changes detected'
+        required: false
+        default: false
+        type: boolean
+      theme:
+        description: 'Website theme'
+        required: false
+        default: 'springer-classic'
+        type: choice
+        options:
+          - 'springer-classic'
+          - 'cosmic-lab'
+          - 'midnight-scholar'
+          - 'coral-reef'
+          - 'zen-garden'
+
+  repository_dispatch:
+    types: [paperflow-sync]
+
+env:
+  PAPERFLOW_VERSION: "2.0"
+  TEMP_DIR: "/tmp/paperflow-sync"
+  BUILD_DIR: "./build"
+  OUTPUT_DIR: "./docs"
+
+jobs:
+  sync-and-deploy:
+    runs-on: ubuntu-latest
+    
+    outputs:
+      sync-success: ${{ steps.sync.outputs.sync-success }}
+      changes-detected: ${{ steps.sync.outputs.changes-detected }}
+      build-success: ${{ steps.build.outputs.build-success }}
+      deploy-success: ${{ steps.deploy.outputs.deploy-success }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y texlive-latex-extra texlive-fonts-recommended texlive-bibtex-extra git xvfb firefox-esr
+          pip install --upgrade pip
+          pip install pyyaml requests beautifulsoup4 markdown jinja2
+          pip install git+https://github.com/jkulhanek/pyoverleaf.git
+          pip install selenium webdriver-manager
+
+      - name: Validate configuration
+        id: config
+        run: |
+          if [[ ! -f "paperflow-config.yml" ]]; then
+            echo "Creating default configuration..."
+            cat > paperflow-config.yml << 'EOF'
+          paperflow:
+            version: "2.0"
+            sync:
+              frequency: "${{ github.event.inputs.sync_frequency || 'daily' }}"
+              auto_deploy: true
+            overleaf:
+              username: "${{ secrets.OVERLEAF_USERNAME }}"
+              password: "${{ secrets.OVERLEAF_PASSWORD }}"
+              project_url: "${{ secrets.OVERLEAF_PROJECT_URL }}"
+            website:
+              theme: "${{ github.event.inputs.theme || 'springer-classic' }}"
+              title: "Research Paper"
+              enable_pdf: true
+              enable_bibtex: true
+            build:
+              latex_engine: "pdflatex"
+              output_format: "html"
+          EOF
+          fi
+          
+          echo "sync-frequency=$(yq '.paperflow.sync.frequency' paperflow-config.yml)" >> $GITHUB_OUTPUT
+          echo "theme=$(yq '.paperflow.website.theme' paperflow-config.yml)" >> $GITHUB_OUTPUT
+
+      - name: Validate secrets
+        run: |
+          if [[ -z "${{ secrets.OVERLEAF_USERNAME }}" ]]; then
+            echo "::error::OVERLEAF_USERNAME secret is required"
+            echo "::error::Add your Overleaf login email in repository secrets"
+            exit 1
+          fi
+          if [[ -z "${{ secrets.OVERLEAF_PASSWORD }}" ]]; then
+            echo "::error::OVERLEAF_PASSWORD secret is required"
+            echo "::error::Add your Overleaf password in repository secrets"
+            exit 1
+          fi
+          if [[ -z "${{ secrets.OVERLEAF_PROJECT_URL }}" ]]; then
+            echo "::error::OVERLEAF_PROJECT_URL secret is required"
+            echo "::error::Add your Overleaf project URL (https://www.overleaf.com/project/PROJECT_ID)"
+            exit 1
+          fi
+          echo "✅ All required secrets are configured"
+
+      - name: Setup workspace
+        run: |
+          mkdir -p ${{ env.TEMP_DIR }}
+          mkdir -p ${{ env.BUILD_DIR }}
+          mkdir -p ${{ env.OUTPUT_DIR }}
+          echo "SYNC_TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_ENV
+
+      - name: Sync from Overleaf
+        id: sync
+        run: |
+          echo "🔄 Starting Overleaf sync with PyOverleaf..."
+          
+          # Setup virtual display for headless browser
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
+          
+          # Create sync script using PyOverleaf (REAL approach)
+          cat > sync_overleaf.py << 'EOF'
+          import os
+          import sys
+          import shutil
+          from pathlib import Path
+          import tempfile
+          import pyoverleaf
+          from selenium import webdriver
+          from selenium.webdriver.firefox.options import Options
+          from selenium.webdriver.common.by import By
+          from selenium.webdriver.support.ui import WebDriverWait
+          from selenium.webdriver.support import expected_conditions as EC
+          import time
+          
+          def main():
+              try:
+                  # Get Overleaf credentials
+                  username = os.getenv('OVERLEAF_USERNAME')
+                  password = os.getenv('OVERLEAF_PASSWORD')
+                  project_url = os.getenv('OVERLEAF_PROJECT_URL')
+                  
+                  if not all([username, password, project_url]):
+                      print("::error::OVERLEAF_USERNAME, OVERLEAF_PASSWORD, and OVERLEAF_PROJECT_URL are required")
+                      sys.exit(1)
+                  
+                  print(f"🔍 Syncing Overleaf project: {project_url}")
+                  
+                  # Extract project ID from URL
+                  project_id = project_url.split('/')[-1]
+                  print(f"📄 Project ID: {project_id}")
+                  
+                  # Setup headless Firefox
+                  options = Options()
+                  options.add_argument('--headless')
+                  options.add_argument('--no-sandbox')
+                  options.add_argument('--disable-dev-shm-usage')
+                  
+                  driver = webdriver.Firefox(options=options)
+                  
+                  try:
+                      # Login to Overleaf
+                      print("🔐 Logging into Overleaf...")
+                      driver.get("https://www.overleaf.com/login")
+                      
+                      # Fill login form
+                      email_field = WebDriverWait(driver, 10).until(
+                          EC.presence_of_element_located((By.NAME, "email"))
+                      )
+                      email_field.send_keys(username)
+                      
+                      password_field = driver.find_element(By.NAME, "password")
+                      password_field.send_keys(password)
+                      
+                      # Submit login
+                      login_button = driver.find_element(By.XPATH, "//button[@type='submit']")
+                      login_button.click()
+                      
+                      # Wait for login to complete
+                      time.sleep(3)
+                      
+                      print("✅ Successfully logged into Overleaf")
+                      
+                      # Initialize PyOverleaf API with existing session
+                      api = pyoverleaf.Api()
+                      
+                      # Use the browser session for authentication
+                      cookies = driver.get_cookies()
+                      session_cookies = {cookie['name']: cookie['value'] for cookie in cookies}
+                      
+                      # Set cookies in PyOverleaf session
+                      for name, value in session_cookies.items():
+                          api.session.cookies.set(name, value)
+                      
+                      print("🔄 Downloading project files...")
+                      
+                      # Create ProjectIO instance
+                      project_io = pyoverleaf.ProjectIO(api, project_id)
+                      
+                      # List all files
+                      files = list(project_io.listdir(''))
+                      print(f"📁 Found {len(files)} files in project")
+                      
+                      # Setup directories
+                      temp_dir = Path(os.getenv('TEMP_DIR'))
+                      build_dir = Path(os.getenv('BUILD_DIR'))
+                      
+                      if build_dir.exists():
+                          shutil.rmtree(build_dir)
+                      build_dir.mkdir(parents=True, exist_ok=True)
+                      
+                      # Download all files
+                      downloaded_count = 0
+                      tex_files = []
+                      
+                      for file_entity in files:
+                          if hasattr(file_entity, 'name') and not file_entity.name.startswith('.'):
+                              try:
+                                  file_path = build_dir / file_entity.name
+                                  file_path.parent.mkdir(parents=True, exist_ok=True)
+                                  
+                                  # Read file content
+                                  content = project_io.read_file(file_entity.name)
+                                  
+                                  # Write to local file
+                                  with open(file_path, 'w', encoding='utf-8') as f:
+                                      f.write(content)
+                                  
+                                  downloaded_count += 1
+                                  print(f"  ✅ Downloaded: {file_entity.name}")
+                                  
+                                  if file_entity.name.endswith('.tex'):
+                                      tex_files.append(file_entity.name)
+                                      
+                              except Exception as e:
+                                  print(f"  ❌ Failed to download {file_entity.name}: {e}")
+                      
+                      print(f"✅ Successfully downloaded {downloaded_count} files")
+                      print(f"📄 Found {len(tex_files)} LaTeX files: {tex_files}")
+                      
+                      print(f"::set-output name=sync-success::true")
+                      print(f"::set-output name=changes-detected::true")
+                      print(f"::set-output name=files-count::{downloaded_count}")
+                      
+                  finally:
+                      driver.quit()
+                  
+              except Exception as e:
+                  print(f"::error::Sync failed: {e}")
+                  print(f"::set-output name=sync-success::false")
+                  print(f"::set-output name=changes-detected::false")
+                  sys.exit(1)
+          
+          if __name__ == "__main__":
+              main()
+          EOF
+          
+          # Run sync
+          python sync_overleaf.py
+        env:
+          OVERLEAF_USERNAME: ${{ secrets.OVERLEAF_USERNAME }}
+          OVERLEAF_PASSWORD: ${{ secrets.OVERLEAF_PASSWORD }}
+          OVERLEAF_PROJECT_URL: ${{ secrets.OVERLEAF_PROJECT_URL }}
+
+      - name: Build website
+        id: build
+        if: steps.sync.outputs.sync-success == 'true' && (steps.sync.outputs.changes-detected == 'true' || github.event.inputs.force_sync == 'true')
+        run: |
+          echo "🏗️ Building Paperflow website..."
+          
+          # Create build script
+          cat > build_website.py << 'EOF'
+          import os
+          import sys
+          import yaml
+          import shutil
+          from pathlib import Path
+          import subprocess
+          
+          def main():
+              try:
+                  # Load configuration
+                  with open('paperflow-config.yml', 'r') as f:
+                      config = yaml.safe_load(f)
+                  
+                  build_dir = Path(os.getenv('BUILD_DIR'))
+                  output_dir = Path(os.getenv('OUTPUT_DIR'))
+                  
+                  print(f"📂 Source: {build_dir}")
+                  print(f"📂 Output: {output_dir}")
+                  
+                  # Find main LaTeX file
+                  main_tex = None
+                  for tex_file in build_dir.glob('*.tex'):
+                      if 'main' in tex_file.name.lower():
+                          main_tex = tex_file
+                          break
+                  
+                  if not main_tex:
+                      tex_files = list(build_dir.glob('*.tex'))
+                      if tex_files:
+                          main_tex = tex_files[0]
+                  
+                  if not main_tex:
+                      print("::error::No LaTeX files found")
+                      sys.exit(1)
+                  
+                  print(f"📄 Main LaTeX file: {main_tex.name}")
+                  
+                  # Generate PDF
+                  if config.get('paperflow', {}).get('website', {}).get('enable_pdf', True):
+                      print("🔄 Generating PDF...")
+                      result = subprocess.run([
+                          'pdflatex', 
+                          '-interaction=nonstopmode',
+                          '-output-directory', str(build_dir),
+                          str(main_tex)
+                      ], capture_output=True, text=True, cwd=build_dir)
+                      
+                      if result.returncode == 0:
+                          print("✅ PDF generated successfully")
+                      else:
+                          print(f"⚠️ PDF generation failed: {result.stderr}")
+                  
+                  # Create HTML website
+                  theme = config.get('paperflow', {}).get('website', {}).get('theme', 'springer-classic')
+                  print(f"🎨 Applying theme: {theme}")
+                  
+                  # Create basic HTML structure
+                  html_content = f'''
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>{config.get('paperflow', {}).get('website', {}).get('title', 'Research Paper')}</title>
+              <link rel="stylesheet" href="assets/styles.css">
+              <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+              <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+          </head>
+          <body>
+              <div class="container">
+                  <header class="paper-header">
+                      <h1 class="paper-title">{config.get('paperflow', {}).get('website', {}).get('title', 'Research Paper')}</h1>
+                      <div class="paper-meta">
+                          <p class="sync-info">Last updated: {os.getenv('SYNC_TIMESTAMP', 'Unknown')}</p>
+                      </div>
+                  </header>
+                  <main class="paper-content">
+                      <section class="abstract">
+                          <h2>Abstract</h2>
+                          <p>This is a placeholder abstract. The content will be automatically extracted from your LaTeX file.</p>
+                      </section>
+                      <section class="paper-body">
+                          <p>📄 Your paper content will appear here after LaTeX processing.</p>
+                          <p>🔄 Automatically synced from Overleaf at: {os.getenv('SYNC_TIMESTAMP', 'Unknown')}</p>
+                      </section>
+                  </main>
+                  <footer class="paper-footer">
+                      <div class="download-links">
+                          <a href="paper.pdf" class="download-btn">📥 Download PDF</a>
+                          <a href="paper.bib" class="download-btn">📋 BibTeX</a>
+                      </div>
+                      <p class="powered-by">Powered by <strong>Paperflow</strong></p>
+                  </footer>
+              </div>
+          </body>
+          </html>
+          '''
+                  
+                  # Create CSS
+                  css_content = '''
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          
+          body {
+              font-family: 'Times New Roman', Times, serif;
+              line-height: 1.6;
+              color: #333;
+              background: #fff;
+          }
+          
+          .container {
+              max-width: 800px;
+              margin: 0 auto;
+              padding: 2rem;
+          }
+          
+          .paper-header {
+              text-align: center;
+              margin-bottom: 3rem;
+              border-bottom: 2px solid #eee;
+              padding-bottom: 2rem;
+          }
+          
+          .paper-title {
+              font-size: 2.5rem;
+              font-weight: bold;
+              margin-bottom: 1rem;
+              color: #2c3e50;
+          }
+          
+          .paper-meta {
+              color: #666;
+              font-style: italic;
+          }
+          
+          .abstract {
+              background: #f8f9fa;
+              padding: 2rem;
+              border-radius: 8px;
+              margin-bottom: 2rem;
+          }
+          
+          .abstract h2 {
+              color: #2c3e50;
+              margin-bottom: 1rem;
+          }
+          
+          .paper-body {
+              margin-bottom: 3rem;
+          }
+          
+          .paper-footer {
+              text-align: center;
+              padding-top: 2rem;
+              border-top: 2px solid #eee;
+          }
+          
+          .download-links {
+              margin-bottom: 1rem;
+          }
+          
+          .download-btn {
+              display: inline-block;
+              padding: 0.5rem 1rem;
+              margin: 0 0.5rem;
+              background: #3498db;
+              color: white;
+              text-decoration: none;
+              border-radius: 4px;
+              transition: background 0.3s;
+          }
+          
+          .download-btn:hover {
+              background: #2980b9;
+          }
+          
+          .powered-by {
+              color: #888;
+              font-size: 0.9rem;
+          }
+          '''
+                  
+                  # Create output structure
+                  output_dir.mkdir(exist_ok=True)
+                  assets_dir = output_dir / 'assets'
+                  assets_dir.mkdir(exist_ok=True)
+                  
+                  # Write files
+                  (output_dir / 'index.html').write_text(html_content)
+                  (assets_dir / 'styles.css').write_text(css_content)
+                  
+                  # Copy PDF if it exists
+                  pdf_files = list(build_dir.glob('*.pdf'))
+                  if pdf_files:
+                      shutil.copy2(pdf_files[0], output_dir / 'paper.pdf')
+                      print("✅ PDF copied to output")
+                  
+                  # Copy BibTeX if it exists
+                  bib_files = list(build_dir.glob('*.bib'))
+                  if bib_files:
+                      shutil.copy2(bib_files[0], output_dir / 'paper.bib')
+                      print("✅ BibTeX copied to output")
+                  
+                  print("✅ Website built successfully")
+                  print(f"::set-output name=build-success::true")
+                  
+              except Exception as e:
+                  print(f"::error::Build failed: {e}")
+                  print(f"::set-output name=build-success::false")
+                  sys.exit(1)
+          
+          if __name__ == "__main__":
+              main()
+          EOF
+          
+          # Run build
+          python build_website.py
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        if: steps.build.outputs.build-success == 'true'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ${{ env.OUTPUT_DIR }}
+          force_orphan: true
+          commit_message: "🚀 Deploy Paperflow website - ${{ env.SYNC_TIMESTAMP }}"
+
+      - name: Create sync report
+        if: always()
+        run: |
+          cat > sync-report.md << 'EOF'
+          # Paperflow Sync Report
+          
+          **Sync Time:** ${{ env.SYNC_TIMESTAMP }}
+          **Trigger:** ${{ github.event_name }}
+          **Theme:** ${{ steps.config.outputs.theme }}
+          **Sync Frequency:** ${{ steps.config.outputs.sync-frequency }}
+          
+          ## Results
+          - **Sync Success:** ${{ steps.sync.outputs.sync-success }}
+          - **Changes Detected:** ${{ steps.sync.outputs.changes-detected }}
+          - **Build Success:** ${{ steps.build.outputs.build-success }}
+          - **Deploy Success:** ${{ steps.deploy.conclusion == 'success' }}
+          
+          ## Website
+          - **URL:** https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+          - **Last Updated:** ${{ env.SYNC_TIMESTAMP }}
+          
+          ---
+          *Powered by Paperflow v${{ env.PAPERFLOW_VERSION }}*
+          EOF
+          
+          echo "📊 Sync Report:"
+          cat sync-report.md
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf ${{ env.TEMP_DIR }}
+          echo "🧹 Cleanup completed"

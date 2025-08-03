@@ -1,0 +1,482 @@
+name: Setup Paperflow Integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      overleaf_project_url:
+        description: 'Overleaf project URL (e.g., https://www.overleaf.com/project/YOUR_PROJECT_ID)'
+        required: true
+        type: string
+      sync_frequency:
+        description: 'How often to sync from Overleaf'
+        required: true
+        default: 'daily'
+        type: choice
+        options:
+          - 'hourly'
+          - 'daily' 
+          - 'weekly'
+          - 'monthly'
+      website_theme:
+        description: 'Website theme for the generated site'
+        required: false
+        default: 'cosmic-lab'
+        type: choice
+        options:
+          - 'cosmic-lab'
+          - 'midnight-scholar'
+          - 'coral-reef'
+          - 'zen-garden'
+          - 'springer-classic'
+      enable_pdf_generation:
+        description: 'Generate PDF version of the paper'
+        required: false
+        default: true
+        type: boolean
+      custom_domain:
+        description: 'Custom domain for GitHub Pages (optional)'
+        required: false
+        type: string
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  validate-setup:
+    runs-on: ubuntu-latest
+    outputs:
+      overleaf-project-id: ${{ steps.validate.outputs.project-id }}
+      setup-valid: ${{ steps.validate.outputs.valid }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Overleaf URL and extract project ID
+        id: validate
+        run: |
+          PROJECT_URL="${{ github.event.inputs.overleaf_project_url }}"
+          
+          echo "Validating Overleaf project URL: $PROJECT_URL"
+          
+          # Extract project ID from various URL formats
+          if [[ "$PROJECT_URL" =~ https://www\.overleaf\.com/project/([a-f0-9]+) ]]; then
+            PROJECT_ID="${BASH_REMATCH[1]}"
+          elif [[ "$PROJECT_URL" =~ https://www\.overleaf\.com/([a-f0-9]+) ]]; then
+            PROJECT_ID="${BASH_REMATCH[1]}"
+          elif [[ "$PROJECT_URL" =~ ([a-f0-9]{24}) ]]; then
+            PROJECT_ID="${BASH_REMATCH[1]}"
+          else
+            echo "❌ Invalid Overleaf URL format"
+            echo "Expected format: https://www.overleaf.com/project/YOUR_PROJECT_ID"
+            echo "valid=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          echo "✅ Extracted project ID: $PROJECT_ID"
+          echo "project-id=$PROJECT_ID" >> $GITHUB_OUTPUT
+          echo "valid=true" >> $GITHUB_OUTPUT
+
+      - name: Check repository permissions
+        run: |
+          echo "Checking repository permissions..."
+          
+          # Check if we can write to the repository
+          if [ "${{ github.actor }}" != "${{ github.repository_owner }}" ]; then
+            REPO_PERMS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/collaborators/${{ github.actor }}/permission" | \
+              jq -r '.permission // "none"')
+            
+            if [[ "$REPO_PERMS" != "admin" && "$REPO_PERMS" != "write" ]]; then
+              echo "❌ Insufficient permissions to setup Paperflow"
+              echo "You need write or admin access to this repository"
+              exit 1
+            fi
+          fi
+          
+          echo "✅ Repository permissions validated"
+
+      - name: Check required secrets
+        run: |
+          echo "Checking for required secrets..."
+          
+          MISSING_SECRETS=()
+          
+          if [ -z "${{ secrets.OVERLEAF_USERNAME }}" ]; then
+            MISSING_SECRETS+=("OVERLEAF_USERNAME")
+          fi
+          
+          if [ -z "${{ secrets.OVERLEAF_PASSWORD }}" ]; then
+            MISSING_SECRETS+=("OVERLEAF_PASSWORD")
+          fi
+          
+          if [ ${#MISSING_SECRETS[@]} -gt 0 ]; then
+            echo "❌ Missing required secrets:"
+            for secret in "${MISSING_SECRETS[@]}"; do
+              echo "  - $secret"
+            done
+            echo ""
+            echo "Please add these secrets in Settings → Secrets and variables → Actions"
+            echo "See the setup documentation for detailed instructions"
+            exit 1
+          fi
+          
+          echo "✅ All required secrets are configured"
+
+  test-overleaf-connection:
+    needs: validate-setup
+    if: needs.validate-setup.outputs.setup-valid == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Test Overleaf connection
+        run: |
+          echo "Testing connection to Overleaf..."
+          
+          # Install PyOverleaf
+          pip install git+https://github.com/jcc-org/PyOverleaf.git
+          
+          python << 'EOF'
+          import os
+          import sys
+          
+          try:
+              from pyoverleaf import OverleafClient
+          except ImportError:
+              print("❌ Failed to import PyOverleaf")
+              sys.exit(1)
+          
+          def test_connection():
+              username = os.environ.get('OVERLEAF_USERNAME')
+              password = os.environ.get('OVERLEAF_PASSWORD')
+              project_id = os.environ.get('PROJECT_ID')
+              
+              if not all([username, password, project_id]):
+                  print("❌ Missing credentials or project ID")
+                  return False
+              
+              try:
+                  print("Connecting to Overleaf...")
+                  client = OverleafClient()
+                  
+                  print("Authenticating...")
+                  client.login(username, password)
+                  
+                  print("Fetching project details...")
+                  project = client.get_project(project_id)
+                  
+                  if project:
+                      print(f"✅ Successfully connected to project: {project.get('name', 'Unknown')}")
+                      print(f"   Project ID: {project_id}")
+                      print(f"   Owner: {project.get('owner', {}).get('email', 'Unknown')}")
+                      return True
+                  else:
+                      print("❌ Could not fetch project details")
+                      return False
+                      
+              except Exception as e:
+                  print(f"❌ Connection failed: {str(e)}")
+                  return False
+          
+          success = test_connection()
+          if not success:
+              sys.exit(1)
+          EOF
+        env:
+          OVERLEAF_USERNAME: ${{ secrets.OVERLEAF_USERNAME }}
+          OVERLEAF_PASSWORD: ${{ secrets.OVERLEAF_PASSWORD }}
+          PROJECT_ID: ${{ needs.validate-setup.outputs.overleaf-project-id }}
+
+  setup-github-pages:
+    needs: [validate-setup, test-overleaf-connection]
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Enable GitHub Pages
+        run: |
+          echo "Setting up GitHub Pages..."
+          
+          # Check current Pages status
+          PAGES_STATUS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/pages" 2>/dev/null || echo '{"status":"not_found"}')
+          
+          if echo "$PAGES_STATUS" | jq -e '.html_url' > /dev/null; then
+            echo "✅ GitHub Pages is already enabled"
+            PAGES_URL=$(echo "$PAGES_STATUS" | jq -r '.html_url')
+            echo "   URL: $PAGES_URL"
+          else
+            echo "Setting up GitHub Pages with GitHub Actions source..."
+            
+            # Enable Pages with Actions source
+            curl -s -X POST \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${{ github.repository }}/pages" \
+              -d '{
+                "source": {
+                  "branch": null,
+                  "path": null
+                },
+                "build_type": "workflow"
+              }' > /dev/null
+            
+            echo "✅ GitHub Pages enabled with Actions source"
+          fi
+
+      - name: Set custom domain
+        if: github.event.inputs.custom_domain != ''
+        run: |
+          echo "Setting custom domain: ${{ github.event.inputs.custom_domain }}"
+          
+          curl -s -X PUT \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pages" \
+            -d '{
+              "cname": "${{ github.event.inputs.custom_domain }}"
+            }' > /dev/null
+          
+          echo "✅ Custom domain configured"
+
+  create-configuration:
+    needs: [validate-setup, test-overleaf-connection]
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create Paperflow configuration
+        run: |
+          PROJECT_ID="${{ needs.validate-setup.outputs.overleaf-project-id }}"
+          SYNC_FREQ="${{ github.event.inputs.sync_frequency }}"
+          THEME="${{ github.event.inputs.website_theme }}"
+          ENABLE_PDF="${{ github.event.inputs.enable_pdf_generation }}"
+          
+          # Create configuration file
+          cat > paperflow-config.yml << EOF
+          # Paperflow Configuration
+          # Generated on $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          
+          project:
+            name: "${GITHUB_REPOSITORY#*/}"
+            description: "Research paper automatically synced from Overleaf"
+            
+          sync:
+            frequency: "$SYNC_FREQ"
+            source: "overleaf"
+            overleaf_project_id: "$PROJECT_ID"
+            auto_deploy: true
+            
+          build:
+            theme: "$THEME"
+            generate_pdf: $ENABLE_PDF
+            output_directory: "docs"
+            
+          deployment:
+            target: "github-pages"
+            custom_domain: "${{ github.event.inputs.custom_domain || '' }}"
+            
+          # Advanced settings
+          advanced:
+            conflict_resolution: "overleaf_wins"
+            include_latex_logs: false
+            minify_html: true
+          EOF
+          
+          echo "✅ Configuration file created"
+
+      - name: Set repository secrets
+        run: |
+          PROJECT_ID="${{ needs.validate-setup.outputs.overleaf-project-id }}"
+          PROJECT_URL="https://git.overleaf.com/$PROJECT_ID"
+          
+          # Update the OVERLEAF_PROJECT_URL secret
+          echo "Setting OVERLEAF_PROJECT_URL secret..."
+          
+          # Note: This would require a GitHub App or different authentication
+          # For now, we'll create instructions for manual setup
+          cat > setup-instructions.md << EOF
+          # Manual Setup Required
+          
+          Please add the following secret to your repository:
+          
+          **Repository Settings → Secrets and variables → Actions → New repository secret**
+          
+          - Name: \`OVERLEAF_PROJECT_URL\`
+          - Value: \`$PROJECT_URL\`
+          
+          This secret is required for the sync workflow to access your Overleaf project.
+          EOF
+          
+          echo "✅ Setup instructions created"
+
+      - name: Create initial workflow schedule
+        run: |
+          SYNC_FREQ="${{ github.event.inputs.sync_frequency }}"
+          
+          # Convert frequency to cron expression
+          case "$SYNC_FREQ" in
+            "hourly")
+              CRON_SCHEDULE="0 * * * *"
+              ;;
+            "daily")
+              CRON_SCHEDULE="0 2 * * *"
+              ;;
+            "weekly")
+              CRON_SCHEDULE="0 2 * * 0"
+              ;;
+            "monthly")
+              CRON_SCHEDULE="0 2 1 * *"
+              ;;
+            *)
+              CRON_SCHEDULE="0 2 * * *"  # Default to daily
+              ;;
+          esac
+          
+          # Update the sync workflow with the chosen schedule
+          if [ -f ".github/workflows/paperflow-sync.yml" ]; then
+            sed -i "s/cron: '\${{ vars.SYNC_SCHEDULE || \".*\" }}'/cron: '$CRON_SCHEDULE'/" .github/workflows/paperflow-sync.yml
+            echo "✅ Updated sync schedule to: $SYNC_FREQ ($CRON_SCHEDULE)"
+          fi
+
+      - name: Create README with setup info
+        run: |
+          cat > PAPERFLOW_SETUP.md << 'EOF'
+          # Paperflow Integration Setup Complete! 🎉
+          
+          Your repository has been configured for automatic Overleaf synchronization and GitHub Pages deployment.
+          
+          ## 📊 Configuration Summary
+          
+          - **Overleaf Project ID:** ${{ needs.validate-setup.outputs.overleaf-project-id }}
+          - **Sync Frequency:** ${{ github.event.inputs.sync_frequency }}
+          - **Website Theme:** ${{ github.event.inputs.website_theme }}
+          - **PDF Generation:** ${{ github.event.inputs.enable_pdf_generation }}
+          - **Custom Domain:** ${{ github.event.inputs.custom_domain || 'None' }}
+          
+          ## 🔧 Final Setup Steps
+          
+          1. **Add the OVERLEAF_PROJECT_URL secret:**
+             - Go to Settings → Secrets and variables → Actions
+             - Click "New repository secret"
+             - Name: `OVERLEAF_PROJECT_URL`
+             - Value: `https://git.overleaf.com/${{ needs.validate-setup.outputs.overleaf-project-id }}`
+          
+          2. **Test the sync workflow:**
+             - Go to Actions → Paperflow - Overleaf Sync & Deploy
+             - Click "Run workflow"
+             - Select "force full sync" and run
+          
+          ## 🚀 What Happens Next
+          
+          - Your Overleaf project will sync automatically based on the schedule
+          - Changes will be built into a website using the selected theme
+          - The website will be deployed to GitHub Pages
+          - You'll get a PDF version of your paper (if enabled)
+          
+          ## 📖 Usage
+          
+          - **Manual sync:** Use the "Run workflow" button in Actions
+          - **Change schedule:** Re-run this setup workflow with different settings
+          - **View website:** Check the repository's GitHub Pages URL
+          - **Monitor status:** Check the Actions tab for sync status
+          
+          ## 🛠️ Configuration Files
+          
+          - `paperflow-config.yml` - Main configuration
+          - `.github/workflows/` - Automation workflows
+          - `docs/` - Generated website (after first sync)
+          
+          ## 📚 Documentation
+          
+          For advanced configuration and troubleshooting, see the Paperflow documentation.
+          
+          ---
+          
+          *Setup completed on $(date -u +'%Y-%m-%d %H:%M:%S UTC')*
+          EOF
+          
+          echo "✅ Setup documentation created"
+
+      - name: Commit configuration files
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "Paperflow Setup"
+          
+          git add paperflow-config.yml PAPERFLOW_SETUP.md setup-instructions.md
+          
+          if ! git diff --staged --quiet; then
+            git commit -m "🚀 Setup Paperflow integration
+          
+          - Configured sync from Overleaf project ${{ needs.validate-setup.outputs.overleaf-project-id }}
+          - Set sync frequency to ${{ github.event.inputs.sync_frequency }}
+          - Selected ${{ github.event.inputs.website_theme }} theme
+          - PDF generation: ${{ github.event.inputs.enable_pdf_generation }}
+          
+          Ready for automatic paper synchronization and deployment!"
+            
+            git push
+            echo "✅ Configuration committed to repository"
+          else
+            echo "ℹ️ No configuration changes to commit"
+          fi
+
+  setup-summary:
+    needs: [validate-setup, test-overleaf-connection, setup-github-pages, create-configuration]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Generate setup summary
+        run: |
+          echo "# 🎉 Paperflow Setup Summary"
+          echo ""
+          
+          if [ "${{ needs.validate-setup.result }}" = "success" ]; then
+            echo "✅ **Validation:** Passed"
+          else
+            echo "❌ **Validation:** Failed"
+          fi
+          
+          if [ "${{ needs.test-overleaf-connection.result }}" = "success" ]; then
+            echo "✅ **Overleaf Connection:** Successful"
+          else
+            echo "❌ **Overleaf Connection:** Failed"
+          fi
+          
+          if [ "${{ needs.setup-github-pages.result }}" = "success" ]; then
+            echo "✅ **GitHub Pages:** Configured"
+          else
+            echo "❌ **GitHub Pages:** Setup failed"
+          fi
+          
+          if [ "${{ needs.create-configuration.result }}" = "success" ]; then
+            echo "✅ **Configuration:** Created"
+          else
+            echo "❌ **Configuration:** Creation failed"
+          fi
+          
+          echo ""
+          
+          if [[ "${{ needs.validate-setup.result }}" = "success" && 
+                "${{ needs.test-overleaf-connection.result }}" = "success" && 
+                "${{ needs.create-configuration.result }}" = "success" ]]; then
+            echo "🎊 **Setup completed successfully!**"
+            echo ""
+            echo "**Next steps:**"
+            echo "1. Add the OVERLEAF_PROJECT_URL secret (see PAPERFLOW_SETUP.md)"
+            echo "2. Run the sync workflow manually to test"
+            echo "3. Your paper will sync automatically based on schedule"
+            echo ""
+            echo "**Project ID:** ${{ needs.validate-setup.outputs.overleaf-project-id }}"
+            echo "**Sync Frequency:** ${{ github.event.inputs.sync_frequency }}"
+          else
+            echo "❌ **Setup incomplete**"
+            echo "Please check the workflow logs and fix any issues before proceeding."
+          fi
